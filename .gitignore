@@ -1,0 +1,14 @@
+# Ambientes virtuais
+venv/
+.venv/
+env/
+
+# Ficheiros compilados da linguagem Python
+__pycache__/
+*.py[cod]
+
+# Dados e ficheiros temporários locais
+*.xlsx
+*.csv
+*.pdf
+.env
