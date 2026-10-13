@@ -1,4 +1,5 @@
 import os
+import re
 from datetime import datetime
 import pandas as pd
 from PIL import Image
@@ -33,7 +34,7 @@ except Exception as e:
   st.error(f"Erro ao carregar dados do Google Sheets: {e}")
   st.stop()
 
-# Filtra apenas o que veio do pré-cadastro feito pelo solicitante
+# Filtra apenas o que veio do pré-cadastro do solicitante
 col_status = next((c for c in df_solic.columns if "STATUS" in c), "STATUS")
 pendentes = df_solic[
     df_solic[col_status]
@@ -47,7 +48,7 @@ if pendentes.empty:
   st.success("✅ Nenhuma solicitação pendente de vistoria no momento!")
   st.stop()
 
-# 2. Seleção da PT pré-cadastrada
+# 2. Seleção da PT
 opcoes_pt = [
     f"PT {row.get('ID SOLICITACAO', idx)} - {row.get('LOCAL', 'Sem Local')}"
     for idx, row in pendentes.iterrows()
@@ -102,7 +103,7 @@ if risco_confinado:
 if risco_quente:
   riscos_selecionados.append("NR-34")
 
-# 5. Registro Fotográfico Obrigatório (Apenas Câmera em Tempo Real)
+# 5. Registro Fotográfico Obrigatório
 st.subheader("3. Registro Fotográfico Obrigatório do Local")
 st.caption(
     "A foto deve ser capturada exclusivamente pela câmera para comprovar a"
@@ -114,10 +115,9 @@ foto_camera = st.camera_input(
 
 st.divider()
 
-# 6. Gestão da Equipe de Executantes (Pré-cadastrados + Inclusões In Loco)
+# 6. Gestão da Equipe de Executantes
 st.subheader("4. Validação da Equipe e Assinaturas Digitais")
 
-# Identifica quem já veio do pré-cadastro
 cpfs_previstos_raw = str(
     pt_selecionada.get(
         "CPFS EQUIPE",
@@ -131,16 +131,22 @@ cpfs_iniciais = [
 ]
 
 mapa_colaboradores = {}
+info_base_colab = {}
 for _, c_row in df_colab.iterrows():
   c_cpf = str(c_row[col_cpf_c]).strip()
   c_nome = str(c_row[col_nome_c]).strip()
-  mapa_colaboradores[f"{c_nome} ({c_cpf})"] = c_cpf
+  c_cargo = (
+      str(c_row[col_cargo_c]).strip() if col_cargo_c else "Operacional"
+  )
+  label = f"{c_nome} ({c_cpf})"
+  mapa_colaboradores[label] = c_cpf
+  info_base_colab[c_cpf] = {"nome": c_nome, "funcao": c_cargo}
 
 opcoes_colaboradores = list(mapa_colaboradores.keys())
 padroes_selecionados = [
     k
     for k, v in mapa_colaboradores.items()
-    if any(v.replace(".", "").replace("-", "") in cp for cp in cpfs_iniciais)
+    if any(re.sub(r"\D", "", v) in re.sub(r"\D", "", cp) for cp in cpfs_iniciais)
 ]
 
 colabs_selecionados = st.multiselect(
@@ -159,17 +165,32 @@ if not colabs_selecionados:
 else:
   for idx_c, item_label in enumerate(colabs_selecionados):
     cpf_alvo = mapa_colaboradores[item_label]
-    apto, info = validar_executante(cpf_alvo, riscos_selecionados)
+    dados_padrao = info_base_colab.get(
+        cpf_alvo, {"nome": item_label, "funcao": "Operacional"}
+    )
 
-    # Mantém os campos sempre abertos por padrão para exigir preenchimento
-    with st.expander(f"👷 {info['nome']} — {info['funcao']}", expanded=True):
+    apto, res_validacao = validar_executante(cpf_alvo, riscos_selecionados)
+
+    # Compatibilidade: funciona se res_validacao for dict ou string
+    if isinstance(res_validacao, dict):
+      nome_func = res_validacao.get("nome", dados_padrao["nome"])
+      funcao_func = res_validacao.get("funcao", dados_padrao["funcao"])
+      motivo_func = res_validacao.get(
+          "motivo", "Apto" if apto else "Não em conformidade"
+      )
+    else:
+      nome_func = dados_padrao["nome"]
+      funcao_func = dados_padrao["funcao"]
+      motivo_func = str(res_validacao)
+
+    with st.expander(f"👷 {nome_func} — {funcao_func}", expanded=True):
       if apto:
         st.success(f"✔️ Apto para os riscos: {', '.join(riscos_selecionados)}")
 
-        # Validação Facial / Selfie do Colaborador
+        # Selfie / Confirmação Facial
         st.write("📷 Selfie / Confirmação Facial do Trabalhador:")
         foto_executante = st.camera_input(
-            f"Selfie de {info['nome']}", key=f"face_{cpf_alvo}_{idx_c}"
+            f"Selfie de {nome_func}", key=f"face_{cpf_alvo}_{idx_c}"
         )
 
         caminho_face = None
@@ -179,8 +200,8 @@ else:
           with open(caminho_face, "wb") as f:
             f.write(foto_executante.getbuffer())
 
-        # Rubrica Touchscreen Obrigatória
-        st.write(f"✍️ Rubrica de **{info['nome']}** no ecrã (Obrigatória):")
+        # Rubrica Touchscreen
+        st.write(f"✍️ Rubrica de **{nome_func}** no ecrã (Obrigatória):")
         canvas_result = st_canvas(
             fill_color="rgba(255, 255, 255, 0)",
             stroke_width=3,
@@ -194,7 +215,6 @@ else:
         )
 
         caminho_rubrica = None
-        # Verifica se o canvas realmente possui traços desenhados
         tem_assinatura = False
         if canvas_result is not None and canvas_result.json_data is not None:
           objetos = canvas_result.json_data.get("objects", [])
@@ -209,17 +229,17 @@ else:
           )
           img_rubrica.save(caminho_rubrica)
         else:
-          faltam_assinaturas.append(info["nome"])
+          faltam_assinaturas.append(nome_func)
 
         dados_equipe_aprovada.append({
-            "nome": info["nome"],
-            "funcao": info["funcao"],
+            "nome": nome_func,
+            "funcao": funcao_func,
             "rubrica": caminho_rubrica,
             "foto_facial": caminho_face,
         })
       else:
-        st.error(f"❌ {info['motivo']}")
-        bloqueios.append(info["motivo"])
+        st.error(f"❌ {motivo_func}")
+        bloqueios.append(motivo_func)
 
 st.divider()
 
@@ -239,7 +259,6 @@ if st.button("🚀 LIBERAR PERMISSÃO DE TRABALHO IN LOCO", type="primary"):
         " equipe!"
     )
   elif faltam_assinaturas:
-    # BLOQUEIO DE ASSINATURA:
     nomes_pendentes = ", ".join(faltam_assinaturas)
     st.error(
         f"⛔ BLOQUEIO: Todos os executantes devem assinar no ecrã! Falta a"
