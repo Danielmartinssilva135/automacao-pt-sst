@@ -171,7 +171,6 @@ else:
 
     apto, res_validacao = validar_executante(cpf_alvo, riscos_selecionados)
 
-    # Compatibilidade: funciona se res_validacao for dict ou string
     if isinstance(res_validacao, dict):
       nome_func = res_validacao.get("nome", dados_padrao["nome"])
       funcao_func = res_validacao.get("funcao", dados_padrao["funcao"])
@@ -200,7 +199,7 @@ else:
           with open(caminho_face, "wb") as f:
             f.write(foto_executante.getbuffer())
 
-        # Rubrica Touchscreen
+        # Rubrica Touchscreen Obrigatória
         st.write(f"✍️ Rubrica de **{nome_func}** no ecrã (Obrigatória):")
         canvas_result = st_canvas(
             fill_color="rgba(255, 255, 255, 0)",
@@ -208,6 +207,7 @@ else:
             stroke_color="#000000",
             background_color="#FFFFFF",
             update_streamlit=True,
+            return_image_data=True,
             height=90,
             width=320,
             drawing_mode="freedraw",
@@ -216,19 +216,24 @@ else:
 
         caminho_rubrica = None
         tem_assinatura = False
+
         if canvas_result is not None and canvas_result.json_data is not None:
           objetos = canvas_result.json_data.get("objects", [])
           if len(objetos) > 0:
             tem_assinatura = True
 
-        if tem_assinatura and canvas_result.image_data is not None:
-          os.makedirs("assinaturas", exist_ok=True)
-          caminho_rubrica = f"assinaturas/rubrica_{cpf_alvo}_{idx_c}.png"
-          img_rubrica = Image.fromarray(
-              canvas_result.image_data.astype("uint8")
-          )
-          img_rubrica.save(caminho_rubrica)
-        else:
+        if tem_assinatura:
+          try:
+            img_data = getattr(canvas_result, "image_data", None)
+            if img_data is not None:
+              os.makedirs("assinaturas", exist_ok=True)
+              caminho_rubrica = f"assinaturas/rubrica_{cpf_alvo}_{idx_c}.png"
+              img_rubrica = Image.fromarray(img_data.astype("uint8"))
+              img_rubrica.save(caminho_rubrica)
+          except Exception:
+            caminho_rubrica = None
+
+        if not caminho_rubrica and not tem_assinatura:
           faltam_assinaturas.append(nome_func)
 
         dados_equipe_aprovada.append({
